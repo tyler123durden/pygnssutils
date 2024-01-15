@@ -23,6 +23,14 @@ Created on 03 Jun 2022
 """
 # pylint: disable=invalid-name
 
+'''
+
+python311.exe .\gnssntripclient.py --server euref-ip.net --ggamode 1 --reflat 37.23 --reflon 115.81 --mountpoint TRF200AUT0 --output d:\data\dump\ntrip\pernitz.bin --ntripuser thartmann --ntrippassword oster42lan > pernitz_parsed2.txt
+
+python311.exe .\gnssntripclient.py --server euref-ip.net --ggamode 1 --reflat 37.23 --reflon 115.81 --mountpoint TRF200AUT0 --output d:\data\dump\ntrip\pernitz.bin --ntripuser thartmann --ntrippassword oster42lan --logtofile 1
+
+'''
+
 import os
 import socket
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser
@@ -41,6 +49,7 @@ from serial import Serial
 from pygnssutils._version import __version__ as VERSION
 from pygnssutils.exceptions import ParameterError
 from pygnssutils.globals import (
+    CONNECTED,
     DEFAULT_BUFSIZE,
     EPILOG,
     HTTPERR,
@@ -52,7 +61,10 @@ from pygnssutils.globals import (
     VERBOSITY_LOW,
     VERBOSITY_MEDIUM,
 )
+
 from pygnssutils.helpers import find_mp_distance, format_conn, ipprot2int
+
+from pygnssutils.socket_server import ClientHandler, SocketServer
 
 TIMEOUT = 10
 GGALIVE = 0
@@ -79,6 +91,7 @@ class GNSSNTRIPClient:
         self._validargs = True
         self._loglines = 0
         self._ntripqueue = Queue()
+        self._kwargs = kwargs
         # persist settings to allow any calling app to retrieve them
         self._settings = {
             "ipprot": socket.AF_INET,
@@ -91,6 +104,12 @@ class GNSSNTRIPClient:
             "version": "2.0",
             "ntripuser": "anon",
             "ntrippassword": "password",
+            "outport": 2101, 
+            "outip": "127.0.0.1",
+            "outntripmode": 0,
+            "outmaxclients": 10,
+            "outputhandler": None,
+            "outblacklist": ['1127'],
             "ggainterval": "None",
             "ggamode": GGALIVE,
             "sourcetable": [],
@@ -118,6 +137,7 @@ class GNSSNTRIPClient:
         self._ntrip_thread = None
         self._last_gga = datetime.fromordinal(1)
         self._logfile = ""
+        self._clients = 0
 
     def __enter__(self):
         """
@@ -218,6 +238,11 @@ class GNSSNTRIPClient:
             self._settings["refsep"] = kwargs.get("refsep", 0.0)
             output = kwargs.get("output", None)
 
+            output = Queue()
+
+            #self._kwargs["outputhandler"] = output
+            self._settings["outputhandler"] = output
+
             if server == "":
                 raise ParameterError(f"Invalid server url {server}")
             if port > MAXPORT or port < 1:
@@ -230,7 +255,15 @@ class GNSSNTRIPClient:
                 VERBOSITY_LOW,
             )
             self._validargs = False
+        
+        self._do_log("Start server")
 
+
+        self._out_thread = self._start_output_thread(**self._kwargs)
+        sleep(0.5)
+
+        self._do_log("Server started")
+        
         if self._validargs:
             self._connected = True
             self._start_read_thread(
@@ -241,6 +274,78 @@ class GNSSNTRIPClient:
             if mountpoint != "":
                 return 1
         return 0
+
+
+    def _start_output_thread(self, **kwargs) -> Thread:
+        """
+        Start output (socket) thread.
+
+        :pararm dict kwargs: optional keyword args
+        :return: thread
+        :rtype: Thread
+        """
+
+        self._do_log(
+            f"Starting output thread, broadcasting on {self._settings['outip']}:{self._settings['outport']}...",
+            VERBOSITY_MEDIUM,
+        )
+        thread = Thread(
+            target=self._output_thread,
+            args=(
+                self,
+                kwargs,
+            ),
+            daemon=True,
+        )
+        thread.start()
+        return thread
+
+    def _output_thread(self, app: object, kwargs):
+        """
+        THREADED
+
+        Output (socket server) thread.
+        """
+
+        try:
+            conn = format_conn(
+                ipprot2int("IPv4"), self._settings['outip'], self._settings['outport']
+            )
+            with SocketServer(
+                self,
+                self._settings['outntripmode'], 
+                self._settings['outmaxclients'],
+                self._settings['outputhandler'],
+                conn,
+                ClientHandler,
+                ntripuser = self._settings["ntripuser"],
+                ntrippassword = self._settings["ntrippassword"],
+                ipprot="IPv4"
+            ) as self._socket_server:
+                self._socket_server.serve_forever()
+        except OSError as err:
+            self._do_log(f"Error starting socket server {err}", VERBOSITY_MEDIUM)
+
+    def notify_client(self, address: tuple, status: int):
+        """
+        Receives and logs notification of client connection or disconnection
+        and increments total number of connected clients.
+
+        :param tuple address: client address
+        :param int status: 0 = disconnected, 1 = connected
+        """
+
+        if status == CONNECTED:
+            pre = ""
+            self._clients += 1
+        else:
+            pre = "dis"
+            self._clients -= 1
+        self._do_log(
+            f"Client {address} has {pre}connected. Total clients: {self._clients}",
+            VERBOSITY_MEDIUM,
+        )
+
 
     def stop(self):
         """
@@ -579,7 +684,12 @@ class GNSSNTRIPClient:
         :param object parsed: parsed message
         """
 
-        self._do_log(parsed, VERBOSITY_MEDIUM)
+        #self._do_log(parsed, VERBOSITY_MEDIUM)
+
+        if parsed.identity in self._settings['outblacklist']: 
+             #self._do_log(f"remove ID: {parsed.identity}")
+             return
+
         if output is not None:
             # serialize sourcetable if outputting to stream
             if isinstance(raw, list) and not isinstance(output, Queue):
@@ -589,7 +699,8 @@ class GNSSNTRIPClient:
             elif isinstance(output, TextIOWrapper):
                 output.write(str(parsed))
             elif isinstance(output, Queue):
-                output.put((raw, parsed))
+                #output.put((raw, parsed))
+                output.put(raw)
             elif isinstance(output, socket.socket):
                 output.sendall(raw)
 
