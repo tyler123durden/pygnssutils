@@ -108,8 +108,18 @@ class GNSSNTRIPClient:
             "outip": "127.0.0.1",
             "outntripmode": 0,
             "outmaxclients": 10,
-            "outputhandler": None,
-            "outblacklist": ['1127'],
+            "outblacklist": [
+                '1127', # BDS MSM7
+                '1087', # GLO MSM7
+                #'1097', # GAL MSM7
+                '1117', # QZSS MSM7
+                #'1077', # GPS MSM7
+                #'1124', # BDS MSM4
+                #'1084', # GLO MSM4
+                #'1094', # GAL MSM4
+                '1114', # QZSS MSM4
+                #'1074', # GPS MSM4
+            ], 
             "ggainterval": "None",
             "ggamode": GGALIVE,
             "sourcetable": [],
@@ -238,9 +248,9 @@ class GNSSNTRIPClient:
             self._settings["refsep"] = kwargs.get("refsep", 0.0)
             output = kwargs.get("output", None)
 
+
             output = Queue()
 
-            #self._kwargs["outputhandler"] = output
             self._settings["outputhandler"] = output
 
             if server == "":
@@ -256,13 +266,8 @@ class GNSSNTRIPClient:
             )
             self._validargs = False
         
-        self._do_log("Start server")
-
-
         self._out_thread = self._start_output_thread(**self._kwargs)
         sleep(0.5)
-
-        self._do_log("Server started")
         
         if self._validargs:
             self._connected = True
@@ -315,7 +320,7 @@ class GNSSNTRIPClient:
                 self,
                 self._settings['outntripmode'], 
                 self._settings['outmaxclients'],
-                self._settings['outputhandler'],
+                self._settings['outputhandler'], 
                 conn,
                 ClientHandler,
                 ntripuser = self._settings["ntripuser"],
